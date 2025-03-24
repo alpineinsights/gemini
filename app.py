@@ -1,3 +1,10 @@
+import os
+# Disable GCE metadata server requests
+os.environ["NO_GCE_CHECK"] = "true"
+
+# Set a bogus path to prevent trying to use Application Default Credentials
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "non_existent_path"
+
 import streamlit as st
 import pandas as pd
 import os
@@ -287,6 +294,28 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         st.error(f"Error querying Gemini: {str(e)}")
         return f"An error occurred while processing your query: {str(e)}"
 
+# Add this after initializing your GCSHandler
+def debug_google_auth():
+    try:
+        gcs_handler = GCSHandler()
+        st.sidebar.success("✅ GCS Authentication successful")
+        # Test bucket access
+        buckets = list(gcs_handler.storage_client.list_buckets())
+        st.sidebar.write(f"Found {len(buckets)} buckets")
+        
+        # Check which bucket we're using
+        bucket_name = st.secrets['other_secrets']['GCS_BUCKET_NAME'] if hasattr(st, 'secrets') else os.getenv("GCS_BUCKET_NAME")
+        st.sidebar.write(f"Target bucket: {bucket_name}")
+        
+        # Test if the bucket exists
+        bucket = gcs_handler.storage_client.bucket(bucket_name)
+        if bucket.exists():
+            st.sidebar.success(f"✅ Bucket '{bucket_name}' exists")
+        else:
+            st.sidebar.error(f"❌ Bucket '{bucket_name}' does not exist")
+    except Exception as e:
+        st.sidebar.error(f"❌ GCS Authentication error: {str(e)}")
+
 # Main UI components
 def main():
     st.title("Financial Insights Chat")
@@ -391,6 +420,9 @@ def main():
                 response = "No documents are available for this company. Please try another company."
                 response_placeholder.markdown(response)
                 st.session_state.chat_history.append({"role": "assistant", "content": response})
+
+    # Call this in your main function
+    debug_google_auth()
 
 if __name__ == "__main__":
     main()
