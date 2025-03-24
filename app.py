@@ -14,7 +14,6 @@ from typing import List, Dict, Tuple
 import json
 from company_data import COMPANY_DATA, get_company_names, get_isin_by_name
 import PyPDF2
-from st_files_connection import FilesConnection
 from google.cloud import storage
 
 # Load environment variables
