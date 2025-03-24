@@ -48,13 +48,32 @@ if "company_data" not in st.session_state:
 if "documents_fetched" not in st.session_state:
     st.session_state.documents_fetched = False
 
-# Load GCS credentials
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "financial-insights-docs")
-GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Get GCS bucket name from Streamlit secrets
+if hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'GCS_BUCKET_NAME' in st.secrets['other_secrets']:
+    GCS_BUCKET_NAME = st.secrets['other_secrets']['GCS_BUCKET_NAME']
+else:
+    GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "financial-insights-docs")
 
-# Create GCS connection
-conn = st.connection('gcs', type=FilesConnection)
+# Get Gemini API key from Streamlit secrets
+if hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'GEMINI_API_KEY' in st.secrets['other_secrets']:
+    GEMINI_API_KEY = st.secrets['other_secrets']['GEMINI_API_KEY']
+else:
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Create GCS connection using secrets
+def create_gcs_connection():
+    """Create GCS connection using Streamlit secrets or environment variables"""
+    if hasattr(st, 'secrets') and 'gcp_service_account' in st.secrets:
+        # This will automatically use the gcp_service_account from secrets
+        conn = st.connection('gcs', type=FilesConnection)
+        return conn
+    else:
+        # Fallback to environment variables (for local development)
+        conn = st.connection('gcs', type=FilesConnection)
+        return conn
+
+# Initialize GCS connection
+conn = create_gcs_connection()
 
 # Function to extract text from PDFs
 def extract_pdf_text(pdf_path: str) -> str:
@@ -76,13 +95,18 @@ def load_company_data():
 
 # Initialize Gemini model
 def initialize_gemini():
-    if not GEMINI_API_KEY:
-        st.error("Gemini API key not found in environment variables")
+    """Initialize Gemini model with API key from secrets or environment variables"""
+    if hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'GEMINI_API_KEY' in st.secrets['other_secrets']:
+        api_key = st.secrets['other_secrets']['GEMINI_API_KEY']
+    elif os.getenv("GEMINI_API_KEY"):
+        api_key = os.getenv("GEMINI_API_KEY")
+    else:
+        st.error("Gemini API key not found in environment variables or secrets")
         return None
     
     try:
         # Configure the Gemini API with your API key
-        genai.configure(api_key=GEMINI_API_KEY)
+        genai.configure(api_key=api_key)
         return True
     except Exception as e:
         st.error(f"Error initializing Gemini: {str(e)}")
@@ -95,7 +119,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
         async with aiohttp.ClientSession() as session:
             # Initialize API and handlers
             quartr_api = QuartrAPI()
-            gcs_handler = GCSHandler()
+            gcs_handler = GCSHandler()  # This will use secrets from the updated GCSHandler class
             transcript_processor = TranscriptProcessor()
             
             # Get company data from Quartr API
@@ -113,6 +137,9 @@ async def process_company_documents(isin: str) -> List[Dict]:
             transcript_count = 0
             report_count = 0
             slides_count = 0
+            
+            # Get bucket name from secrets
+            bucket_name = st.secrets['other_secrets']['GCS_BUCKET_NAME'] if hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'GCS_BUCKET_NAME' in st.secrets['other_secrets'] else GCS_BUCKET_NAME
             
             # Only process up to 6 documents in total (2 of each type)
             for event in events:
@@ -146,7 +173,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
                             )
                             
                             success = await gcs_handler.upload_file(
-                                pdf_data, filename, GCS_BUCKET_NAME, 'application/pdf'
+                                pdf_data, filename, bucket_name, 'application/pdf'
                             )
                             
                             if success:
@@ -155,7 +182,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                     'type': 'transcript',
                                     'event_date': event_date,
                                     'event_title': event_title,
-                                    'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
+                                    'gcs_url': f"gs://{bucket_name}/{filename}"
                                 })
                                 transcript_count += 1
                     except Exception as e:
@@ -174,7 +201,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                 )
                                 
                                 success = await gcs_handler.upload_file(
-                                    content, filename, GCS_BUCKET_NAME, 
+                                    content, filename, bucket_name, 
                                     response.headers.get('content-type', 'application/pdf')
                                 )
                                 
@@ -184,7 +211,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                         'type': 'report',
                                         'event_date': event_date,
                                         'event_title': event_title,
-                                        'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
+                                        'gcs_url': f"gs://{bucket_name}/{filename}"
                                     })
                                     report_count += 1
                     except Exception as e:
@@ -203,7 +230,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                 )
                                 
                                 success = await gcs_handler.upload_file(
-                                    content, filename, GCS_BUCKET_NAME, 
+                                    content, filename, bucket_name, 
                                     response.headers.get('content-type', 'application/pdf')
                                 )
                                 
@@ -213,7 +240,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                         'type': 'slides',
                                         'event_date': event_date,
                                         'event_title': event_title,
-                                        'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
+                                        'gcs_url': f"gs://{bucket_name}/{filename}"
                                     })
                                     slides_count += 1
                     except Exception as e:
