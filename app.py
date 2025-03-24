@@ -218,7 +218,7 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
             role="user",
             parts=[
                 *[types.Part.from_uri(file_uri=file.uri, mime_type=file.mime_type) for file in files],
-                types.Part.from_text(text=f"""You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: "{query}"""")
+                types.Part.from_text(text=f"""You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: "{query}" """)
             ]
         )]
         
