@@ -1,22 +1,31 @@
 import os
+import io
+import json
+import time
+import asyncio
+import tempfile
+import traceback
+from typing import List, Dict
+from datetime import datetime
+import logging
 import streamlit as st
 import pandas as pd
 import os
-import tempfile
 import uuid
 from dotenv import load_dotenv
 import google.generativeai as genai
-import time
 from utils import QuartrAPI, GCSHandler, TranscriptProcessor
 import aiohttp
-import asyncio
-from typing import List, Dict, Tuple
-import json
 from company_data import COMPANY_DATA, get_company_names, get_isin_by_name
 import PyPDF2
 from google.cloud import storage
-import logging
-import traceback
+
+# Configure logging - MUST be before any function definitions
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
