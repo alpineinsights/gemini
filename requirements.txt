@@ -29,3 +29,6 @@ st-files-connection
 gcsfs==2024.6.1
 google-cloud-storage==2.13.0
 PyPDF2==3.0.1
+
+# Add aiofiles to your requirements.txt
+aiofiles==23.2.1
