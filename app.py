@@ -53,6 +53,12 @@ if hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'GEMINI_API_KEY'
 else:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# Get Quartr API key from Streamlit secrets
+if hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'QUARTR_API_KEY' in st.secrets['other_secrets']:
+    QUARTR_API_KEY = st.secrets['other_secrets']['QUARTR_API_KEY']
+else:
+    QUARTR_API_KEY = os.getenv("QUARTR_API_KEY")
+
 # Replace the existing create_gcs_connection function with this one:
 def create_gcs_connection():
     """Create GCS connection using Streamlit secrets or environment variables"""
@@ -104,8 +110,8 @@ async def process_company_documents(isin: str) -> List[Dict]:
     try:
         async with aiohttp.ClientSession() as session:
             # Initialize API and handlers
-            quartr_api = QuartrAPI()
-            gcs_handler = GCSHandler()  # This will use secrets from the updated GCSHandler class
+            quartr_api = QuartrAPI(api_key=QUARTR_API_KEY)
+            gcs_handler = GCSHandler()
             transcript_processor = TranscriptProcessor()
             
             # Get company data from Quartr API

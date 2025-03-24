@@ -27,12 +27,25 @@ GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 
 class QuartrAPI:
-    def __init__(self):
-        if not QUARTR_API_KEY:
-            raise ValueError("Quartr API key not found in environment variables")
-        self.api_key = QUARTR_API_KEY
-        self.base_url = "https://api.quartr.com/public/v1"
-        self.headers = {"X-Api-Key": self.api_key}
+    def __init__(self, api_key=None):
+        """Initialize QuartrAPI with API key from parameters, secrets, or environment variables"""
+        self.base_url = "https://api.quartr.com/v1"
+        
+        # Get API key from parameter, secrets, or environment variable
+        if api_key:
+            self.api_key = api_key
+        elif hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'QUARTR_API_KEY' in st.secrets['other_secrets']:
+            self.api_key = st.secrets['other_secrets']['QUARTR_API_KEY']
+        else:
+            self.api_key = os.getenv("QUARTR_API_KEY")
+            
+        if not self.api_key:
+            raise ValueError("Quartr API key not found")
+            
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
 
     async def get_company_events(self, isin: str, session: aiohttp.ClientSession) -> Dict:
         """Get company events from Quartr API"""
@@ -85,7 +98,7 @@ class TranscriptProcessor:
                 document_id = transcript_url.split('/')[-2]
                 if document_id.isdigit():
                     raw_transcript_url = f"https://api.quartr.com/public/v1/transcripts/document/{document_id}"
-                    headers = {"X-Api-Key": QUARTR_API_KEY}
+                    headers = {"X-Api-Key": self.api_key}
                     async with session.get(raw_transcript_url, headers=headers) as response:
                         if response.status == 200:
                             transcript_data = await response.json()
@@ -102,7 +115,7 @@ class TranscriptProcessor:
                 logger.info(f"Fetching transcript from: {raw_transcript_url}")
                 
                 try:
-                    headers = {"X-Api-Key": QUARTR_API_KEY} if 'api.quartr.com' in raw_transcript_url else {}
+                    headers = {"X-Api-Key": self.api_key} if 'api.quartr.com' in raw_transcript_url else {}
                     async with session.get(raw_transcript_url, headers=headers) as response:
                         if response.status == 200:
                             # Try processing as JSON first
