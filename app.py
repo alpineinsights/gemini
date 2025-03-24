@@ -5,7 +5,7 @@ import boto3
 import tempfile
 import uuid
 from dotenv import load_dotenv
-from google import genai
+from google import google.generativeai as genai
 import time
 from utils import QuartrAPI, S3Handler, TranscriptProcessor
 import aiohttp
