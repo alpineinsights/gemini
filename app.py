@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import os
-import boto3
 import tempfile
 import uuid
 from dotenv import load_dotenv
