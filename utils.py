@@ -29,7 +29,7 @@ GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 class QuartrAPI:
     def __init__(self, api_key=None):
         """Initialize QuartrAPI with API key from parameters, secrets, or environment variables"""
-        self.base_url = "https://api.quartr.com/v1"
+        self.base_url = "https://api.quartr.com/public/v1"
         
         # Get API key from parameter, secrets, or environment variable
         if api_key:
@@ -42,31 +42,63 @@ class QuartrAPI:
         if not self.api_key:
             raise ValueError("Quartr API key not found")
             
+        # Update headers to use X-Api-Key as in the documentation
         self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-Api-Key": self.api_key
         }
 
     async def get_company_events(self, isin: str, session: aiohttp.ClientSession) -> Dict:
         """Get company events from Quartr API"""
         try:
-            url = f"{self.base_url}/companies/lookup/{isin}"
-            logger.info(f"Requesting data from Quartr API for ISIN: {isin}")
+            # First try to get company information by ISIN
+            company_lookup_url = f"{self.base_url}/companies/lookup"
+            payload = {"keyword": isin, "searchType": "isin"}
             
-            async with session.get(url, headers=self.headers) as response:
-                if response.status == 404:
-                    logger.warning(f"Company with ISIN {isin} not found in Quartr database")
-                    return {"error": "company_not_found", "message": f"Company with ISIN {isin} not found in Quartr database"}
-                elif response.status != 200:
+            logger.info(f"Looking up company with ISIN: {isin}")
+            async with session.post(company_lookup_url, json=payload, headers=self.headers) as response:
+                if response.status != 200:
                     error_text = await response.text()
-                    logger.error(f"Error fetching data for ISIN {isin}: Status {response.status}, Response: {error_text}")
-                    return {"error": "api_error", "message": f"API error: {response.status}", "details": error_text}
+                    logger.error(f"Error looking up company with ISIN {isin}: Status {response.status}, Response: {error_text}")
+                    return None
                 
-                data = await response.json()
-                return data
+                companies = await response.json()
+                if not companies or len(companies) == 0:
+                    logger.warning(f"No company found with ISIN {isin}")
+                    return None
+                
+                # Get the first matching company
+                company = companies[0]
+                company_id = company.get('id')
+                
+                if not company_id:
+                    logger.warning(f"Company found but no ID for ISIN {isin}")
+                    return None
+                
+                # Now get the company events using the company ID
+                events_url = f"{self.base_url}/companies/{company_id}/events"
+                
+                logger.info(f"Getting events for company ID: {company_id}")
+                async with session.get(events_url, headers=self.headers) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Error getting events for company {company_id}: Status {response.status}, Response: {error_text}")
+                        return None
+                    
+                    events = await response.json()
+                    
+                    # Combine company info with events
+                    return {
+                        "id": company.get('id'),
+                        "displayName": company.get('name'),
+                        "ticker": company.get('ticker'),
+                        "country": company.get('country'),
+                        "events": events
+                    }
+                    
         except Exception as e:
-            logger.error(f"Exception fetching company data: {str(e)}")
-            return {"error": "exception", "message": str(e)}
+            logger.error(f"Exception in Quartr API: {str(e)}")
+            return None
     
     async def get_document(self, doc_url: str, session: aiohttp.ClientSession):
         """Get document from URL"""

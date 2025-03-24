@@ -117,126 +117,97 @@ async def process_company_documents(isin: str) -> List[Dict]:
             # Get company data from Quartr API
             company_data = await quartr_api.get_company_events(isin, session)
             if not company_data:
+                st.error(f"Could not find company with ISIN {isin} in Quartr database.")
                 return []
             
             company_name = company_data.get('displayName', 'Unknown Company')
             events = company_data.get('events', [])
             
-            # Sort events by date (descending) and take the most recent events first
+            if not events:
+                st.warning(f"No events found for {company_name}.")
+                return []
+            
+            # Sort events by date (descending) and take the 6 most recent
             events.sort(key=lambda x: x.get('eventDate', ''), reverse=True)
+            recent_events = events[:6]
             
             processed_files = []
-            transcript_count = 0
-            report_count = 0
-            slides_count = 0
             
-            # Get bucket name from secrets
-            bucket_name = st.secrets['other_secrets']['GCS_BUCKET_NAME'] if hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'GCS_BUCKET_NAME' in st.secrets['other_secrets'] else GCS_BUCKET_NAME
-            
-            # Only process up to 6 documents in total (2 of each type)
-            for event in events:
-                # Stop processing if we have enough documents (2 of each type)
-                if transcript_count >= 2 and report_count >= 2 and slides_count >= 2:
-                    break
-                    
+            for event in recent_events:
                 event_date = event.get('eventDate', '').split('T')[0]
                 event_title = event.get('eventTitle', 'Unknown Event')
                 
-                # Only process the document types we need
-                if transcript_count < 2 and event.get('transcriptUrl'):
-                    # Process transcript
-                    try:
-                        transcripts = event.get('transcripts', {})
-                        if not transcripts:
-                            # If the transcripts object is empty, check for liveTranscripts
-                            transcripts = event.get('liveTranscripts', {})
-                        
-                        transcript_text = await transcript_processor.process_transcript(
-                            event.get('transcriptUrl'), transcripts, session
-                        )
-                        
-                        if transcript_text:
-                            pdf_data = transcript_processor.create_pdf(
-                                company_name, event_title, event_date, transcript_text
-                            )
-                            
-                            filename = gcs_handler.create_filename(
-                                company_name, event_date, event_title, 'transcript', 'transcript.pdf'
-                            )
-                            
-                            success = await gcs_handler.upload_file(
-                                pdf_data, filename, bucket_name, 'application/pdf'
-                            )
-                            
-                            if success:
-                                processed_files.append({
-                                    'filename': filename,
-                                    'type': 'transcript',
-                                    'event_date': event_date,
-                                    'event_title': event_title,
-                                    'gcs_url': f"gs://{bucket_name}/{filename}"
-                                })
-                                transcript_count += 1
-                    except Exception as e:
-                        st.error(f"Error processing transcript for {event_title}: {str(e)}")
+                # Check for different document types
+                doc_types = [
+                    ('transcript', event.get('transcriptUrl')),
+                    ('pdf', event.get('pdfUrl')),
+                    ('report', event.get('reportUrl'))
+                ]
                 
-                # Process report (if we need more)
-                if report_count < 2 and event.get('reportUrl'):
+                for doc_type, url in doc_types:
+                    if not url:
+                        continue
+                    
                     try:
-                        async with session.get(event.get('reportUrl')) as response:
-                            if response.status == 200:
-                                content = await response.read()
-                                original_filename = event.get('reportUrl').split('/')[-1]
-                                
-                                filename = gcs_handler.create_filename(
-                                    company_name, event_date, event_title, 'report', original_filename
+                        if doc_type == 'transcript':
+                            # Process transcript differently
+                            transcripts = event.get('transcripts', {})
+                            if not transcripts:
+                                # If the transcripts object is empty, check for liveTranscripts
+                                transcripts = event.get('liveTranscripts', {})
+                            
+                            transcript_text = await transcript_processor.process_transcript(
+                                url, transcripts, session
+                            )
+                            
+                            if transcript_text:
+                                pdf_data = transcript_processor.create_pdf(
+                                    company_name, event_title, event_date, transcript_text
                                 )
                                 
+                                filename = gcs_handler.create_filename(
+                                    company_name, event_date, event_title, 'transcript', 'transcript.pdf'
+                                )
+                                
+                                # Assuming GCSHandler has a similar upload_file method
                                 success = await gcs_handler.upload_file(
-                                    content, filename, bucket_name, 
-                                    response.headers.get('content-type', 'application/pdf')
+                                    pdf_data, filename, GCS_BUCKET_NAME, 'application/pdf'
                                 )
                                 
                                 if success:
                                     processed_files.append({
                                         'filename': filename,
-                                        'type': 'report',
+                                        'type': 'transcript',
                                         'event_date': event_date,
                                         'event_title': event_title,
-                                        'gcs_url': f"gs://{bucket_name}/{filename}"
+                                        'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
                                     })
-                                    report_count += 1
+                        else:
+                            # Process other document types
+                            async with session.get(url) as response:
+                                if response.status == 200:
+                                    content = await response.read()
+                                    original_filename = url.split('/')[-1]
+                                    
+                                    filename = gcs_handler.create_filename(
+                                        company_name, event_date, event_title, doc_type, original_filename
+                                    )
+                                    
+                                    success = await gcs_handler.upload_file(
+                                        content, filename, GCS_BUCKET_NAME, 
+                                        response.headers.get('content-type', 'application/pdf')
+                                    )
+                                    
+                                    if success:
+                                        processed_files.append({
+                                            'filename': filename,
+                                            'type': doc_type,
+                                            'event_date': event_date,
+                                            'event_title': event_title,
+                                            'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
+                                        })
                     except Exception as e:
-                        st.error(f"Error processing report for {event_title}: {str(e)}")
-                
-                # Process slides/PDF (if we need more)
-                if slides_count < 2 and event.get('pdfUrl'):
-                    try:
-                        async with session.get(event.get('pdfUrl')) as response:
-                            if response.status == 200:
-                                content = await response.read()
-                                original_filename = event.get('pdfUrl').split('/')[-1]
-                                
-                                filename = gcs_handler.create_filename(
-                                    company_name, event_date, event_title, 'slides', original_filename
-                                )
-                                
-                                success = await gcs_handler.upload_file(
-                                    content, filename, bucket_name, 
-                                    response.headers.get('content-type', 'application/pdf')
-                                )
-                                
-                                if success:
-                                    processed_files.append({
-                                        'filename': filename,
-                                        'type': 'slides',
-                                        'event_date': event_date,
-                                        'event_title': event_title,
-                                        'gcs_url': f"gs://{bucket_name}/{filename}"
-                                    })
-                                    slides_count += 1
-                    except Exception as e:
-                        st.error(f"Error processing slides for {event_title}: {str(e)}")
+                        st.error(f"Error processing {doc_type} for {event_title}: {str(e)}")
             
             return processed_files
     except Exception as e:
