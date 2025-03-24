@@ -14,6 +14,8 @@ import aiofiles
 import tempfile
 import datetime
 import streamlit as st  # Make sure to import streamlit
+import time
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,38 +33,65 @@ class QuartrAPI:
         """Initialize QuartrAPI with API key from parameters, secrets, or environment variables"""
         self.base_url = "https://api.quartr.com/public/v1"
         
+        logger.info("Initializing QuartrAPI client")
+        
         # Get API key from parameter, secrets, or environment variable
         if api_key:
             self.api_key = api_key
+            logger.info("Using provided API key")
         elif hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'QUARTR_API_KEY' in st.secrets['other_secrets']:
             self.api_key = st.secrets['other_secrets']['QUARTR_API_KEY']
+            logger.info("Using API key from Streamlit secrets")
         else:
             self.api_key = os.getenv("QUARTR_API_KEY")
+            logger.info("Using API key from environment variables")
             
         if not self.api_key:
+            logger.error("Quartr API key not found in any source")
             raise ValueError("Quartr API key not found")
+            
+        # Mask the API key for logging (show only the first 4 and last 4 characters)
+        masked_key = f"{self.api_key[:4]}...{self.api_key[-4:]}" if len(self.api_key) > 8 else "****"
+        logger.info(f"API key configured: {masked_key}")
             
         # Update headers to use X-Api-Key as in the documentation
         self.headers = {
             "Content-Type": "application/json",
             "X-Api-Key": self.api_key
         }
+        logger.info("QuartrAPI initialized successfully")
 
     async def get_company_events(self, isin: str, session: aiohttp.ClientSession) -> Dict:
         """Get company events from Quartr API using only ISIN"""
+        start_time = time.time()
+        logger.info(f"Starting company events lookup for ISIN: {isin}")
+        
         try:
             # Only use direct ISIN lookup
             url = f"{self.base_url}/companies/isin/{isin}"
-            logger.info(f"Looking up company with ISIN: {isin}")
+            logger.info(f"Making API request to: {url}")
+            
+            # Log the request headers (without the actual API key)
+            safe_headers = {k: '****' if k == 'X-Api-Key' else v for k, v in self.headers.items()}
+            logger.info(f"Request headers: {safe_headers}")
             
             async with session.get(url, headers=self.headers) as response:
+                response_time = time.time() - start_time
+                logger.info(f"Received response in {response_time:.2f}s with status code: {response.status}")
+                
                 if response.status != 200:
                     error_text = await response.text()
-                    logger.error(f"Error looking up company with ISIN {isin}: Status {response.status}, Response: {error_text}")
+                    logger.error(f"Error looking up company with ISIN {isin}: Status {response.status}")
+                    logger.error(f"Response body: {error_text}")
                     return None
                 
                 company = await response.json()
+                logger.info(f"Successfully retrieved company data for {isin}")
+                
+                # Log some company details
                 company_id = company.get('id')
+                company_name = company.get('name')
+                logger.info(f"Company details - ID: {company_id}, Name: {company_name}")
                 
                 if not company_id:
                     logger.warning(f"Company found but no ID for ISIN {isin}")
@@ -70,18 +99,37 @@ class QuartrAPI:
                 
                 # Get the company events using the company ID
                 events_url = f"{self.base_url}/companies/{company_id}/events"
+                logger.info(f"Requesting company events from: {events_url}")
                 
-                logger.info(f"Getting events for company ID: {company_id}")
+                events_start_time = time.time()
                 async with session.get(events_url, headers=self.headers) as response:
+                    events_response_time = time.time() - events_start_time
+                    logger.info(f"Received events response in {events_response_time:.2f}s with status code: {response.status}")
+                    
                     if response.status != 200:
                         error_text = await response.text()
-                        logger.error(f"Error getting events for company {company_id}: Status {response.status}, Response: {error_text}")
+                        logger.error(f"Error getting events for company {company_id}: Status {response.status}")
+                        logger.error(f"Response body: {error_text}")
                         return None
                     
                     events = await response.json()
+                    event_count = len(events)
+                    logger.info(f"Retrieved {event_count} events for company {company_name}")
+                    
+                    # Log information about the events
+                    if event_count > 0:
+                        earliest_date = min([e.get('eventDate', '9999-12-31') for e in events if e.get('eventDate')])
+                        latest_date = max([e.get('eventDate', '0000-01-01') for e in events if e.get('eventDate')])
+                        logger.info(f"Events date range: {earliest_date} to {latest_date}")
+                        
+                        # Count document types
+                        transcript_count = sum(1 for e in events if e.get('transcriptUrl'))
+                        pdf_count = sum(1 for e in events if e.get('pdfUrl'))
+                        report_count = sum(1 for e in events if e.get('reportUrl'))
+                        logger.info(f"Available documents - Transcripts: {transcript_count}, PDFs: {pdf_count}, Reports: {report_count}")
                     
                     # Combine company info with events
-                    return {
+                    result = {
                         "id": company.get('id'),
                         "displayName": company.get('name'),
                         "ticker": company.get('ticker'),
@@ -89,8 +137,15 @@ class QuartrAPI:
                         "events": events
                     }
                     
+                    total_time = time.time() - start_time
+                    logger.info(f"Completed company events lookup in {total_time:.2f}s")
+                    return result
+                    
         except Exception as e:
-            logger.error(f"Exception in Quartr API: {str(e)}")
+            total_time = time.time() - start_time
+            logger.error(f"Exception in Quartr API after {total_time:.2f}s: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     async def get_document(self, doc_url: str, session: aiohttp.ClientSession):

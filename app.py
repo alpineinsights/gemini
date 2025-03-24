@@ -15,6 +15,8 @@ import json
 from company_data import COMPANY_DATA, get_company_names, get_isin_by_name
 import PyPDF2
 from google.cloud import storage
+import logging
+import traceback
 
 # Load environment variables
 load_dotenv()
@@ -107,16 +109,26 @@ def initialize_gemini():
 # Function to process company documents
 async def process_company_documents(isin: str) -> List[Dict]:
     """Process company documents and return list of file information"""
+    start_time = time.time()
+    logger.info(f"Starting document processing for ISIN: {isin}")
+    
     try:
         async with aiohttp.ClientSession() as session:
             # Initialize API and handlers
+            logger.info("Initializing API and handlers")
             quartr_api = QuartrAPI(api_key=QUARTR_API_KEY)
             gcs_handler = GCSHandler()
             transcript_processor = TranscriptProcessor()
             
             # Get company data from Quartr API
+            logger.info(f"Requesting company data for ISIN: {isin}")
+            api_start_time = time.time()
             company_data = await quartr_api.get_company_events(isin, session)
+            api_time = time.time() - api_start_time
+            logger.info(f"Company data request completed in {api_time:.2f}s")
+            
             if not company_data:
+                logger.warning(f"No company data returned for ISIN: {isin}")
                 st.error(f"""
                 Company with ISIN {isin} not found in Quartr database.
                 
@@ -130,42 +142,56 @@ async def process_company_documents(isin: str) -> List[Dict]:
             
             company_name = company_data.get('displayName', 'Unknown Company')
             events = company_data.get('events', [])
+            logger.info(f"Processing for company: {company_name}, found {len(events)} events")
             
             if not events:
+                logger.warning(f"No events found for {company_name}")
                 st.warning(f"No events found for {company_name}.")
                 return []
             
             # Sort events by date (descending) and take the most recent events first
             events.sort(key=lambda x: x.get('eventDate', ''), reverse=True)
+            logger.info(f"Sorted {len(events)} events by date (most recent first)")
             
             processed_files = []
             transcript_count = 0
             report_count = 0
             slides_count = 0
             
+            logger.info("Starting to process individual event documents")
+            
             # Only process up to 6 documents in total (2 of each type)
-            for event in events:
+            for i, event in enumerate(events):
                 # Stop processing if we have enough documents (2 of each type)
                 if transcript_count >= 2 and report_count >= 2 and slides_count >= 2:
+                    logger.info("Reached target document counts (2 of each type), stopping further processing")
                     break
                     
                 event_date = event.get('eventDate', '').split('T')[0]
                 event_title = event.get('eventTitle', 'Unknown Event')
+                logger.info(f"Processing event {i+1}/{len(events)}: {event_date} - {event_title}")
                 
                 # Only process the document types we need
                 if transcript_count < 2 and event.get('transcriptUrl'):
                     # Process transcript
+                    transcript_url = event.get('transcriptUrl')
+                    logger.info(f"Processing transcript: {transcript_url}")
                     try:
+                        transcript_start = time.time()
                         transcripts = event.get('transcripts', {})
                         if not transcripts:
                             # If the transcripts object is empty, check for liveTranscripts
                             transcripts = event.get('liveTranscripts', {})
+                            logger.info("Using liveTranscripts instead of transcripts")
                         
+                        logger.info("Calling transcript processor")
                         transcript_text = await transcript_processor.process_transcript(
-                            event.get('transcriptUrl'), transcripts, session
+                            transcript_url, transcripts, session
                         )
                         
                         if transcript_text:
+                            logger.info(f"Successfully processed transcript text ({len(transcript_text)} chars)")
+                            logger.info("Creating PDF from transcript text")
                             pdf_data = transcript_processor.create_pdf(
                                 company_name, event_title, event_date, transcript_text
                             )
@@ -173,12 +199,17 @@ async def process_company_documents(isin: str) -> List[Dict]:
                             filename = gcs_handler.create_filename(
                                 company_name, event_date, event_title, 'transcript', 'transcript.pdf'
                             )
+                            logger.info(f"Generated filename: {filename}")
                             
+                            logger.info(f"Uploading transcript PDF to GCS bucket: {GCS_BUCKET_NAME}")
+                            upload_start = time.time()
                             success = await gcs_handler.upload_file(
                                 pdf_data, filename, GCS_BUCKET_NAME, 'application/pdf'
                             )
+                            upload_time = time.time() - upload_start
                             
                             if success:
+                                logger.info(f"Successfully uploaded transcript to GCS in {upload_time:.2f}s")
                                 processed_files.append({
                                     'filename': filename,
                                     'type': 'transcript',
@@ -187,27 +218,52 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                     'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
                                 })
                                 transcript_count += 1
+                                logger.info(f"Transcript count now: {transcript_count}/2")
+                            else:
+                                logger.error(f"Failed to upload transcript to GCS after {upload_time:.2f}s")
+                        else:
+                            logger.warning("No transcript text was extracted")
+                            
+                        transcript_time = time.time() - transcript_start
+                        logger.info(f"Transcript processing completed in {transcript_time:.2f}s")
                     except Exception as e:
+                        logger.error(f"Error processing transcript for {event_title}: {str(e)}")
+                        logger.error(f"Traceback: {traceback.format_exc()}")
                         st.error(f"Error processing transcript for {event_title}: {str(e)}")
                 
                 # Process report (if we need more)
                 if report_count < 2 and event.get('reportUrl'):
+                    report_url = event.get('reportUrl')
+                    logger.info(f"Processing report: {report_url}")
                     try:
-                        async with session.get(event.get('reportUrl')) as response:
+                        report_start = time.time()
+                        async with session.get(report_url) as response:
+                            response_time = time.time() - report_start
+                            logger.info(f"Got report response in {response_time:.2f}s with status: {response.status}")
+                            
                             if response.status == 200:
                                 content = await response.read()
-                                original_filename = event.get('reportUrl').split('/')[-1]
+                                content_size = len(content) / 1024  # KB
+                                logger.info(f"Downloaded report content: {content_size:.2f} KB")
+                                
+                                original_filename = report_url.split('/')[-1]
+                                logger.info(f"Original report filename: {original_filename}")
                                 
                                 filename = gcs_handler.create_filename(
                                     company_name, event_date, event_title, 'report', original_filename
                                 )
+                                logger.info(f"Generated filename: {filename}")
                                 
+                                logger.info(f"Uploading report to GCS bucket: {GCS_BUCKET_NAME}")
+                                upload_start = time.time()
                                 success = await gcs_handler.upload_file(
                                     content, filename, GCS_BUCKET_NAME, 
                                     response.headers.get('content-type', 'application/pdf')
                                 )
+                                upload_time = time.time() - upload_start
                                 
                                 if success:
+                                    logger.info(f"Successfully uploaded report to GCS in {upload_time:.2f}s")
                                     processed_files.append({
                                         'filename': filename,
                                         'type': 'report',
@@ -216,27 +272,52 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                         'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
                                     })
                                     report_count += 1
+                                    logger.info(f"Report count now: {report_count}/2")
+                                else:
+                                    logger.error(f"Failed to upload report to GCS after {upload_time:.2f}s")
+                            else:
+                                logger.warning(f"Could not download report, status code: {response.status}")
+                                
+                        report_time = time.time() - report_start
+                        logger.info(f"Report processing completed in {report_time:.2f}s")
                     except Exception as e:
+                        logger.error(f"Error processing report for {event_title}: {str(e)}")
+                        logger.error(f"Traceback: {traceback.format_exc()}")
                         st.error(f"Error processing report for {event_title}: {str(e)}")
                 
                 # Process slides/PDF (if we need more)
                 if slides_count < 2 and event.get('pdfUrl'):
+                    pdf_url = event.get('pdfUrl')
+                    logger.info(f"Processing slides PDF: {pdf_url}")
                     try:
-                        async with session.get(event.get('pdfUrl')) as response:
+                        pdf_start = time.time()
+                        async with session.get(pdf_url) as response:
+                            response_time = time.time() - pdf_start
+                            logger.info(f"Got PDF response in {response_time:.2f}s with status: {response.status}")
+                            
                             if response.status == 200:
                                 content = await response.read()
-                                original_filename = event.get('pdfUrl').split('/')[-1]
+                                content_size = len(content) / 1024  # KB
+                                logger.info(f"Downloaded PDF content: {content_size:.2f} KB")
+                                
+                                original_filename = pdf_url.split('/')[-1]
+                                logger.info(f"Original PDF filename: {original_filename}")
                                 
                                 filename = gcs_handler.create_filename(
                                     company_name, event_date, event_title, 'slides', original_filename
                                 )
+                                logger.info(f"Generated filename: {filename}")
                                 
+                                logger.info(f"Uploading slides PDF to GCS bucket: {GCS_BUCKET_NAME}")
+                                upload_start = time.time()
                                 success = await gcs_handler.upload_file(
                                     content, filename, GCS_BUCKET_NAME, 
                                     response.headers.get('content-type', 'application/pdf')
                                 )
+                                upload_time = time.time() - upload_start
                                 
                                 if success:
+                                    logger.info(f"Successfully uploaded slides PDF to GCS in {upload_time:.2f}s")
                                     processed_files.append({
                                         'filename': filename,
                                         'type': 'slides',
@@ -245,11 +326,27 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                         'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
                                     })
                                     slides_count += 1
+                                    logger.info(f"Slides count now: {slides_count}/2")
+                                else:
+                                    logger.error(f"Failed to upload slides PDF to GCS after {upload_time:.2f}s")
+                            else:
+                                logger.warning(f"Could not download PDF, status code: {response.status}")
+                                
+                        pdf_time = time.time() - pdf_start
+                        logger.info(f"Slides PDF processing completed in {pdf_time:.2f}s")
                     except Exception as e:
+                        logger.error(f"Error processing slides for {event_title}: {str(e)}")
+                        logger.error(f"Traceback: {traceback.format_exc()}")
                         st.error(f"Error processing slides for {event_title}: {str(e)}")
             
+            total_time = time.time() - start_time
+            logger.info(f"Document processing completed in {total_time:.2f}s. Processed {len(processed_files)} files.")
+            logger.info(f"Final counts - Transcripts: {transcript_count}, Reports: {report_count}, Slides: {slides_count}")
             return processed_files
     except Exception as e:
+        total_time = time.time() - start_time
+        logger.error(f"Error in document processing after {total_time:.2f}s: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         st.error(f"Error processing company documents: {str(e)}")
         return []
 
