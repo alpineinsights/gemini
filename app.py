@@ -117,7 +117,15 @@ async def process_company_documents(isin: str) -> List[Dict]:
             # Get company data from Quartr API
             company_data = await quartr_api.get_company_events(isin, session)
             if not company_data:
-                st.error(f"Could not find company with ISIN {isin} in Quartr database.")
+                st.error(f"""
+                Company with ISIN {isin} not found in Quartr database.
+                
+                This could be because:
+                - The company might not be covered by Quartr
+                - The ISIN might be incorrect
+                
+                Try searching for a well-known large company (e.g., Apple - US0378331005, Microsoft - US5949181045).
+                """)
                 return []
             
             company_name = company_data.get('displayName', 'Unknown Company')

@@ -49,13 +49,13 @@ class QuartrAPI:
         }
 
     async def get_company_events(self, isin: str, session: aiohttp.ClientSession) -> Dict:
-        """Get company events from Quartr API"""
+        """Get company events from Quartr API using only ISIN"""
         try:
-            # First try to get company information by ISIN
-            company_lookup_url = f"{self.base_url}/companies/isin/{isin}"
-            
+            # Only use direct ISIN lookup
+            url = f"{self.base_url}/companies/isin/{isin}"
             logger.info(f"Looking up company with ISIN: {isin}")
-            async with session.get(company_lookup_url, headers=self.headers) as response:
+            
+            async with session.get(url, headers=self.headers) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"Error looking up company with ISIN {isin}: Status {response.status}, Response: {error_text}")
@@ -68,7 +68,7 @@ class QuartrAPI:
                     logger.warning(f"Company found but no ID for ISIN {isin}")
                     return None
                 
-                # Now get the company events using the company ID
+                # Get the company events using the company ID
                 events_url = f"{self.base_url}/companies/{company_id}/events"
                 
                 logger.info(f"Getting events for company ID: {company_id}")
