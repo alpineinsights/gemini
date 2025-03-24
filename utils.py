@@ -11,6 +11,11 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from typing import Dict, Optional, List
+from google.cloud import storage
+import aiofiles
+import tempfile
+import datetime
+import streamlit as st  # Make sure to import streamlit
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +29,10 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
 QUARTR_API_KEY = os.getenv("QUARTR_API_KEY")
+
+# Get environment variables for GCS
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 
 class QuartrAPI:
     def __init__(self):
@@ -223,41 +232,53 @@ class TranscriptProcessor:
             logger.error(f"Error building PDF: {str(e)}")
             return b''
 
-class S3Handler:
+class GCSHandler:
     def __init__(self):
-        if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION]):
-            raise ValueError("AWS credentials not found in environment variables")
-        self.session = aioboto3.Session(
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=AWS_DEFAULT_REGION
-        )
-        self.boto3_session = boto3.Session(
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=AWS_DEFAULT_REGION
-        )
+        if hasattr(st, 'secrets') and 'gcp_service_account' in st.secrets:
+            # Use service account info directly from Streamlit secrets
+            service_account_info = st.secrets['gcp_service_account']
+            self.storage_client = storage.Client.from_service_account_info(service_account_info)
+        else:
+            # Fallback to environment variable
+            if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+                raise ValueError("Google Cloud credentials not found in Streamlit secrets or environment variables")
+            self.storage_client = storage.Client()
 
     async def upload_file(self, file_data: bytes, filename: str, bucket_name: str, 
                          content_type: str = 'application/pdf') -> bool:
-        """Upload file to S3 bucket"""
+        """Upload file to GCS bucket"""
         try:
-            async with self.session.client('s3') as s3:
-                await s3.put_object(
-                    Bucket=bucket_name,
-                    Key=filename,
-                    Body=file_data,
-                    ContentType=content_type
-                )
-                logger.info(f"Successfully uploaded {filename} to S3 bucket {bucket_name}")
+            bucket = self.storage_client.bucket(bucket_name)
+            blob = bucket.blob(filename)
+            
+            # Set the content type
+            blob.content_type = content_type
+            
+            # Write the data to a temporary file
+            temp_file = tempfile.NamedTemporaryFile(delete=False)
+            temp_file.write(file_data)
+            temp_file.close()
+            
+            # Upload from the temporary file asynchronously
+            try:
+                async with aiofiles.open(temp_file.name, 'rb') as f:
+                    content = await f.read()
+                    blob.upload_from_string(content, content_type=content_type)
+                os.unlink(temp_file.name)
+                logger.info(f"Successfully uploaded {filename} to GCS bucket {bucket_name}")
                 return True
+            except Exception as e:
+                if os.path.exists(temp_file.name):
+                    os.unlink(temp_file.name)
+                raise e
+                
         except Exception as e:
-            logger.error(f"Error uploading to S3: {str(e)}")
+            logger.error(f"Error uploading to GCS: {str(e)}")
             return False
 
     def create_filename(self, company_name: str, event_date: str, event_title: str,
                        doc_type: str, original_filename: str) -> str:
-        """Create standardized filename for S3"""
+        """Create standardized filename for GCS"""
         clean_company = company_name.replace(" ", "_").replace("/", "_").lower()
         clean_event = event_title.replace(" ", "_").lower()
         clean_date = event_date.split("T")[0]
@@ -265,16 +286,18 @@ class S3Handler:
         file_extension = "pdf" if doc_type == "transcript" else original_filename.split(".")[-1].lower()
         return f"{clean_company}_{clean_date}_{clean_event}_{doc_type}.{file_extension}"
     
-    def create_presigned_url(self, bucket_name: str, key: str, expiration: int = 3600) -> Optional[str]:
-        """Create a presigned URL for an S3 object"""
+    def create_signed_url(self, bucket_name: str, blob_name: str, expiration: int = 3600) -> Optional[str]:
+        """Create a signed URL for a GCS object"""
         try:
-            s3_client = self.boto3_session.client('s3')
-            response = s3_client.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': bucket_name, 'Key': key},
-                ExpiresIn=expiration
+            bucket = self.storage_client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            
+            url = blob.generate_signed_url(
+                version="v4",
+                expiration=datetime.timedelta(seconds=expiration),
+                method="GET"
             )
-            return response
+            return url
         except Exception as e:
-            logger.error(f"Error creating presigned URL: {str(e)}")
+            logger.error(f"Error creating signed URL: {str(e)}")
             return None

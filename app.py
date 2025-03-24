@@ -7,12 +7,15 @@ import uuid
 from dotenv import load_dotenv
 import google.generativeai as genai
 import time
-from utils import QuartrAPI, S3Handler, TranscriptProcessor
+from utils import QuartrAPI, GCSHandler, TranscriptProcessor
 import aiohttp
 import asyncio
 from typing import List, Dict, Tuple
 import json
 from company_data import COMPANY_DATA, get_company_names, get_isin_by_name
+import PyPDF2
+from st_files_connection import FilesConnection
+from google.cloud import storage
 
 # Load environment variables
 load_dotenv()
@@ -39,12 +42,25 @@ if "company_data" not in st.session_state:
 if "documents_fetched" not in st.session_state:
     st.session_state.documents_fetched = False
 
-# Load AWS credentials
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "financial-insights-docs")
+# Load GCS credentials
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "financial-insights-docs")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Create GCS connection
+conn = st.connection('gcs', type=FilesConnection)
+
+# Function to extract text from PDFs
+def extract_pdf_text(pdf_path: str) -> str:
+    """Reads the PDF from pdf_path and returns its full text."""
+    full_text = []
+    with open(pdf_path, 'rb') as f:
+        reader = PyPDF2.PdfReader(f)
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                full_text.append(text)
+    return "\n".join(full_text)
 
 # Load company data from the pre-defined list
 @st.cache_data
@@ -73,7 +89,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
         async with aiohttp.ClientSession() as session:
             # Initialize API and handlers
             quartr_api = QuartrAPI()
-            s3_handler = S3Handler()
+            gcs_handler = GCSHandler()
             transcript_processor = TranscriptProcessor()
             
             # Get company data from Quartr API
@@ -119,12 +135,12 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                 company_name, event_title, event_date, transcript_text
                             )
                             
-                            filename = s3_handler.create_filename(
+                            filename = gcs_handler.create_filename(
                                 company_name, event_date, event_title, 'transcript', 'transcript.pdf'
                             )
                             
-                            success = await s3_handler.upload_file(
-                                pdf_data, filename, S3_BUCKET_NAME, 'application/pdf'
+                            success = await gcs_handler.upload_file(
+                                pdf_data, filename, GCS_BUCKET_NAME, 'application/pdf'
                             )
                             
                             if success:
@@ -133,7 +149,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                     'type': 'transcript',
                                     'event_date': event_date,
                                     'event_title': event_title,
-                                    's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                    'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
                                 })
                                 transcript_count += 1
                     except Exception as e:
@@ -147,12 +163,12 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                 content = await response.read()
                                 original_filename = event.get('reportUrl').split('/')[-1]
                                 
-                                filename = s3_handler.create_filename(
+                                filename = gcs_handler.create_filename(
                                     company_name, event_date, event_title, 'report', original_filename
                                 )
                                 
-                                success = await s3_handler.upload_file(
-                                    content, filename, S3_BUCKET_NAME, 
+                                success = await gcs_handler.upload_file(
+                                    content, filename, GCS_BUCKET_NAME, 
                                     response.headers.get('content-type', 'application/pdf')
                                 )
                                 
@@ -162,7 +178,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                         'type': 'report',
                                         'event_date': event_date,
                                         'event_title': event_title,
-                                        's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                        'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
                                     })
                                     report_count += 1
                     except Exception as e:
@@ -176,12 +192,12 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                 content = await response.read()
                                 original_filename = event.get('pdfUrl').split('/')[-1]
                                 
-                                filename = s3_handler.create_filename(
+                                filename = gcs_handler.create_filename(
                                     company_name, event_date, event_title, 'slides', original_filename
                                 )
                                 
-                                success = await s3_handler.upload_file(
-                                    content, filename, S3_BUCKET_NAME, 
+                                success = await gcs_handler.upload_file(
+                                    content, filename, GCS_BUCKET_NAME, 
                                     response.headers.get('content-type', 'application/pdf')
                                 )
                                 
@@ -191,7 +207,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
                                         'type': 'slides',
                                         'event_date': event_date,
                                         'event_title': event_title,
-                                        's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                        'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
                                     })
                                     slides_count += 1
                     except Exception as e:
@@ -202,51 +218,51 @@ async def process_company_documents(isin: str) -> List[Dict]:
         st.error(f"Error processing company documents: {str(e)}")
         return []
 
-# Function to download files from S3 to temporary location
-def download_files_from_s3(file_infos: List[Dict]) -> List[str]:
-    """Download files from S3 to temporary location and return local paths"""
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_DEFAULT_REGION
-    )
+# Function to download files from GCS to temporary location
+def download_files_from_gcs(file_infos: List[Dict]) -> List[str]:
+    """Download files from GCS to temporary location and return local paths"""
     
     temp_dir = tempfile.mkdtemp()
     local_files = []
     
     for file_info in file_infos:
         try:
-            s3_path = file_info['s3_url'].replace('s3://', '')
-            bucket, key = s3_path.split('/', 1)
+            gcs_path = file_info['gcs_url'].replace('gs://', '')
+            bucket_name, blob_name = gcs_path.split('/', 1)
             
             local_path = os.path.join(temp_dir, file_info['filename'])
-            s3_client.download_file(bucket, key, local_path)
+            
+            # Download the file using st-files-connection
+            with open(local_path, 'wb') as f:
+                content = conn.read(gcs_path, input_format="binary")
+                f.write(content)
+                
             local_files.append(local_path)
         except Exception as e:
-            st.error(f"Error downloading file from S3: {str(e)}")
+            st.error(f"Error downloading file from GCS: {str(e)}")
     
     return local_files
 
 # Function to query Gemini with file context
 def query_gemini(query: str, file_paths: List[str]) -> str:
-    """Query Gemini model with context from files"""
+    """Query Gemini model with context from extracted PDF text"""
     try:
         # Make sure Gemini is initialized
         if not initialize_gemini():
             return "Error initializing Gemini client"
         
-        # Upload files to Gemini
-        files = []
+        # Extract text from PDFs
+        context_snippets = []
         for file_path in file_paths:
             try:
-                file = genai.upload_file(file_path)
-                files.append(file)
+                pdf_text = extract_pdf_text(file_path)
+                if pdf_text.strip():
+                    context_snippets.append(pdf_text)
             except Exception as e:
-                st.error(f"Error uploading file to Gemini: {str(e)}")
+                st.error(f"Error extracting text from PDF: {str(e)}")
         
-        if not files:
-            return "No files were successfully uploaded to Gemini"
+        if not context_snippets:
+            return "No text was extracted from the provided files"
         
         # Create a model instance
         model = genai.GenerativeModel(
@@ -262,9 +278,9 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         # Create the prompt with context
         prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'"
         
-        # Generate content with files as context
+        # Generate content with context snippets
         response = model.generate_content(
-            [prompt, *files]
+            [prompt, *context_snippets]
         )
         
         return response.text
@@ -349,11 +365,11 @@ def main():
             # Process the user query with the fetched documents
             if st.session_state.processed_files:
                 with st.spinner("Processing your query with Gemini..."):
-                    # Download files from S3
-                    local_files = download_files_from_s3(st.session_state.processed_files)
+                    # Download files from GCS
+                    local_files = download_files_from_gcs(st.session_state.processed_files)
                     
                     if not local_files:
-                        response = "Error downloading files from S3. Please check your AWS credentials."
+                        response = "Error downloading files from GCS. Please check your Google Cloud credentials."
                         response_placeholder.markdown(response)
                         st.session_state.chat_history.append({"role": "assistant", "content": response})
                         return
