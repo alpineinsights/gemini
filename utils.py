@@ -49,21 +49,24 @@ class QuartrAPI:
 
     async def get_company_events(self, isin: str, session: aiohttp.ClientSession) -> Dict:
         """Get company events from Quartr API"""
-        url = f"{self.base_url}/companies/isin/{isin}"
         try:
+            url = f"{self.base_url}/companies/lookup/{isin}"
             logger.info(f"Requesting data from Quartr API for ISIN: {isin}")
+            
             async with session.get(url, headers=self.headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    logger.info(f"Successfully retrieved data for ISIN: {isin}")
-                    return data
-                else:
-                    response_text = await response.text()
-                    logger.error(f"Error fetching data for ISIN {isin}: Status {response.status}, Response: {response_text}")
-                    return {}
+                if response.status == 404:
+                    logger.warning(f"Company with ISIN {isin} not found in Quartr database")
+                    return {"error": "company_not_found", "message": f"Company with ISIN {isin} not found in Quartr database"}
+                elif response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"Error fetching data for ISIN {isin}: Status {response.status}, Response: {error_text}")
+                    return {"error": "api_error", "message": f"API error: {response.status}", "details": error_text}
+                
+                data = await response.json()
+                return data
         except Exception as e:
-            logger.error(f"Exception while fetching data for ISIN {isin}: {str(e)}")
-            return {}
+            logger.error(f"Exception fetching company data: {str(e)}")
+            return {"error": "exception", "message": str(e)}
     
     async def get_document(self, doc_url: str, session: aiohttp.ClientSession):
         """Get document from URL"""
