@@ -1,49 +1,66 @@
-# Financial Insights Chat App
+Financial Insights Chat App
+A Streamlit application that allows users to chat with financial documents using Gemini AI and the Quartr API. The app fetches company financial documents, processes them, and uses AI to answer user queries about the selected company.
+Features
 
-A Streamlit application that allows users to chat with financial documents using Gemini AI and the Quartr API.
+Select a company from a pre-loaded list of European companies
+Fetch company financial documents from Quartr API (transcripts, reports, presentations)
+Convert transcript data to well-formatted PDFs
+Upload documents to Amazon S3
+Process user queries against the documents using Google's Gemini 2.0 Flash model
+Display AI-generated responses with source information
 
-## Features
+Architecture
+The application consists of several components:
 
-- Select a company from a dropdown list loaded from an Excel file
-- Fetch company financial documents from Quartr API
-- Convert transcript data to well-formatted PDFs
-- Upload documents to Amazon S3
-- Process user queries against the documents using Google's Gemini 2.0 Flash model
-- Display AI-generated responses with source information
+Streamlit Web Interface: Provides the user interface for company selection and chat
+Company Data Module: Pre-loaded list of MSCI Europe companies with ISIN codes
+Quartr API Integration: Fetches financial documents for the selected company
+Document Processing: Converts and standardizes documents (especially transcripts)
+S3 Storage: Stores processed documents for retrieval
+Gemini AI Integration: Analyzes documents and responds to user queries
 
-## Prerequisites
+Prerequisites
 
-- Python 3.9+
-- AWS account with S3 access
-- Quartr API key
-- Google Gemini API key
-- Excel file with company information (MSCI Europe universe.xlsx)
+Python 3.9+
+AWS account with S3 access
+Quartr API key
+Google Gemini API key
 
-## Setup
+Setup
 
-1. **Clone the repository**
+Clone the repository
+Install dependencies
+Copierpip install -r requirements.txt
 
-2. **Install dependencies**
-   ```
-   pip install -r requirements.txt
-   ```
+Create environment variables
+Copy the .env-template file to .env and fill in your credentials:
+Copiercp .env-template .env
 
-3. **Create environment variables**
-   
-   Copy the `.env-template` file to `.env` and fill in your credentials:
-   ```
-   cp .env-template .env
-   ```
+Create an S3 bucket
+Create an S3 bucket to store the documents and ensure your AWS credentials have permission to write to it.
 
-4. **Prepare the data file**
-   
-   Ensure you have the "MSCI Europe universe.xlsx" file in the project root directory. The file should contain at least two columns: "Name" and "ISIN".
+Project Structure
+Copierfinancial-insights-chat/
+├── app.py                 # Main Streamlit application
+├── company_data.py        # Pre-loaded company data
+├── utils.py               # Utility classes for API, S3, and document processing
+├── requirements.txt       # Python dependencies
+├── .env-template          # Template for environment variables
+└── README.md              # Project documentation
+Running the Application
+Copierstreamlit run app.py
+How It Works
 
-5. **Create an S3 bucket**
-   
-   Create an S3 bucket to store the documents and ensure your AWS credentials have permission to write to it.
+The user selects a company from the dropdown in the sidebar
+The app fetches the latest financial documents from Quartr API
+Documents are processed and uploaded to S3
+When the user asks a question, the app:
 
-## Running the Application
+Downloads the relevant documents from S3
+Sends them to Gemini AI along with the user's query
+Displays the AI-generated response with source information
 
-```
-streamlit run app.
+
+
+Customizing the Company List
+The list of companies is pre-loaded in company_data.py. You can modify this file to add, remove, or update companies as needed.
