@@ -127,94 +127,125 @@ async def process_company_documents(isin: str) -> List[Dict]:
                 st.warning(f"No events found for {company_name}.")
                 return []
             
-            # Sort events by date (descending) and take the 6 most recent
+            # Sort events by date (descending) and take the most recent events first
             events.sort(key=lambda x: x.get('eventDate', ''), reverse=True)
-            recent_events = events[:6]
             
             processed_files = []
+            transcript_count = 0
+            report_count = 0
+            slides_count = 0
             
-            for event in recent_events:
+            # Only process up to 6 documents in total (2 of each type)
+            for event in events:
+                # Stop processing if we have enough documents (2 of each type)
+                if transcript_count >= 2 and report_count >= 2 and slides_count >= 2:
+                    break
+                    
                 event_date = event.get('eventDate', '').split('T')[0]
                 event_title = event.get('eventTitle', 'Unknown Event')
                 
-                # Check for different document types
-                doc_types = [
-                    ('transcript', event.get('transcriptUrl')),
-                    ('pdf', event.get('pdfUrl')),
-                    ('report', event.get('reportUrl'))
-                ]
-                
-                for doc_type, url in doc_types:
-                    if not url:
-                        continue
-                    
+                # Only process the document types we need
+                if transcript_count < 2 and event.get('transcriptUrl'):
+                    # Process transcript
                     try:
-                        if doc_type == 'transcript':
-                            # Process transcript differently
-                            transcripts = event.get('transcripts', {})
-                            if not transcripts:
-                                # If the transcripts object is empty, check for liveTranscripts
-                                transcripts = event.get('liveTranscripts', {})
-                            
-                            transcript_text = await transcript_processor.process_transcript(
-                                url, transcripts, session
+                        transcripts = event.get('transcripts', {})
+                        if not transcripts:
+                            # If the transcripts object is empty, check for liveTranscripts
+                            transcripts = event.get('liveTranscripts', {})
+                        
+                        transcript_text = await transcript_processor.process_transcript(
+                            event.get('transcriptUrl'), transcripts, session
+                        )
+                        
+                        if transcript_text:
+                            pdf_data = transcript_processor.create_pdf(
+                                company_name, event_title, event_date, transcript_text
                             )
                             
-                            if transcript_text:
-                                pdf_data = transcript_processor.create_pdf(
-                                    company_name, event_title, event_date, transcript_text
-                                )
+                            filename = gcs_handler.create_filename(
+                                company_name, event_date, event_title, 'transcript', 'transcript.pdf'
+                            )
+                            
+                            success = await gcs_handler.upload_file(
+                                pdf_data, filename, GCS_BUCKET_NAME, 'application/pdf'
+                            )
+                            
+                            if success:
+                                processed_files.append({
+                                    'filename': filename,
+                                    'type': 'transcript',
+                                    'event_date': event_date,
+                                    'event_title': event_title,
+                                    'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
+                                })
+                                transcript_count += 1
+                    except Exception as e:
+                        st.error(f"Error processing transcript for {event_title}: {str(e)}")
+                
+                # Process report (if we need more)
+                if report_count < 2 and event.get('reportUrl'):
+                    try:
+                        async with session.get(event.get('reportUrl')) as response:
+                            if response.status == 200:
+                                content = await response.read()
+                                original_filename = event.get('reportUrl').split('/')[-1]
                                 
                                 filename = gcs_handler.create_filename(
-                                    company_name, event_date, event_title, 'transcript', 'transcript.pdf'
+                                    company_name, event_date, event_title, 'report', original_filename
                                 )
                                 
-                                # Assuming GCSHandler has a similar upload_file method
                                 success = await gcs_handler.upload_file(
-                                    pdf_data, filename, GCS_BUCKET_NAME, 'application/pdf'
+                                    content, filename, GCS_BUCKET_NAME, 
+                                    response.headers.get('content-type', 'application/pdf')
                                 )
                                 
                                 if success:
                                     processed_files.append({
                                         'filename': filename,
-                                        'type': 'transcript',
+                                        'type': 'report',
                                         'event_date': event_date,
                                         'event_title': event_title,
                                         'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
                                     })
-                        else:
-                            # Process other document types
-                            async with session.get(url) as response:
-                                if response.status == 200:
-                                    content = await response.read()
-                                    original_filename = url.split('/')[-1]
-                                    
-                                    filename = gcs_handler.create_filename(
-                                        company_name, event_date, event_title, doc_type, original_filename
-                                    )
-                                    
-                                    success = await gcs_handler.upload_file(
-                                        content, filename, GCS_BUCKET_NAME, 
-                                        response.headers.get('content-type', 'application/pdf')
-                                    )
-                                    
-                                    if success:
-                                        processed_files.append({
-                                            'filename': filename,
-                                            'type': doc_type,
-                                            'event_date': event_date,
-                                            'event_title': event_title,
-                                            'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
-                                        })
+                                    report_count += 1
                     except Exception as e:
-                        st.error(f"Error processing {doc_type} for {event_title}: {str(e)}")
+                        st.error(f"Error processing report for {event_title}: {str(e)}")
+                
+                # Process slides/PDF (if we need more)
+                if slides_count < 2 and event.get('pdfUrl'):
+                    try:
+                        async with session.get(event.get('pdfUrl')) as response:
+                            if response.status == 200:
+                                content = await response.read()
+                                original_filename = event.get('pdfUrl').split('/')[-1]
+                                
+                                filename = gcs_handler.create_filename(
+                                    company_name, event_date, event_title, 'slides', original_filename
+                                )
+                                
+                                success = await gcs_handler.upload_file(
+                                    content, filename, GCS_BUCKET_NAME, 
+                                    response.headers.get('content-type', 'application/pdf')
+                                )
+                                
+                                if success:
+                                    processed_files.append({
+                                        'filename': filename,
+                                        'type': 'slides',
+                                        'event_date': event_date,
+                                        'event_title': event_title,
+                                        'gcs_url': f"gs://{GCS_BUCKET_NAME}/{filename}"
+                                    })
+                                    slides_count += 1
+                    except Exception as e:
+                        st.error(f"Error processing slides for {event_title}: {str(e)}")
             
             return processed_files
     except Exception as e:
         st.error(f"Error processing company documents: {str(e)}")
         return []
 
-# Update the download_files_from_gcs function to use gcs_handler directly:
+# Function to download files from GCS to temporary location
 def download_files_from_gcs(file_infos: List[Dict]) -> List[str]:
     """Download files from GCS to temporary location and return local paths"""
     
@@ -241,24 +272,23 @@ def download_files_from_gcs(file_infos: List[Dict]) -> List[str]:
 
 # Function to query Gemini with file context
 def query_gemini(query: str, file_paths: List[str]) -> str:
-    """Query Gemini model with context from extracted PDF text"""
+    """Query Gemini model with context from files"""
     try:
         # Make sure Gemini is initialized
         if not initialize_gemini():
             return "Error initializing Gemini client"
         
-        # Extract text from PDFs
-        context_snippets = []
+        # Upload files to Gemini
+        files = []
         for file_path in file_paths:
             try:
-                pdf_text = extract_pdf_text(file_path)
-                if pdf_text.strip():
-                    context_snippets.append(pdf_text)
+                file = genai.upload_file(file_path)
+                files.append(file)
             except Exception as e:
-                st.error(f"Error extracting text from PDF: {str(e)}")
+                st.error(f"Error uploading file to Gemini: {str(e)}")
         
-        if not context_snippets:
-            return "No text was extracted from the provided files"
+        if not files:
+            return "No files were successfully uploaded to Gemini"
         
         # Create a model instance
         model = genai.GenerativeModel(
@@ -274,9 +304,9 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         # Create the prompt with context
         prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'"
         
-        # Generate content with context snippets
+        # Generate content with files as context
         response = model.generate_content(
-            [prompt, *context_snippets]
+            [prompt, *files]
         )
         
         return response.text

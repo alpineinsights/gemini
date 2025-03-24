@@ -52,23 +52,16 @@ class QuartrAPI:
         """Get company events from Quartr API"""
         try:
             # First try to get company information by ISIN
-            company_lookup_url = f"{self.base_url}/companies/lookup"
-            payload = {"keyword": isin, "searchType": "isin"}
+            company_lookup_url = f"{self.base_url}/companies/isin/{isin}"
             
             logger.info(f"Looking up company with ISIN: {isin}")
-            async with session.post(company_lookup_url, json=payload, headers=self.headers) as response:
+            async with session.get(company_lookup_url, headers=self.headers) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"Error looking up company with ISIN {isin}: Status {response.status}, Response: {error_text}")
                     return None
                 
-                companies = await response.json()
-                if not companies or len(companies) == 0:
-                    logger.warning(f"No company found with ISIN {isin}")
-                    return None
-                
-                # Get the first matching company
-                company = companies[0]
+                company = await response.json()
                 company_id = company.get('id')
                 
                 if not company_id:
