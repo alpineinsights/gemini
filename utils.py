@@ -232,17 +232,23 @@ class TranscriptProcessor:
             logger.error(f"Error building PDF: {str(e)}")
             return b''
 
+    def create_filename(self, company_name: str, event_date: str, event_title: str,
+                       doc_type: str, original_filename: str) -> str:
+        """Create standardized filename for GCS"""
+        clean_company = company_name.replace(" ", "_").replace("/", "_").lower()
+        clean_event = event_title.replace(" ", "_").lower()
+        clean_date = event_date.split("T")[0]
+        # Always use PDF extension for transcripts
+        file_extension = "pdf" if doc_type == "transcript" else original_filename.split(".")[-1].lower()
+        return f"{clean_company}_{clean_date}_{clean_event}_{doc_type}.{file_extension}"
+
 class GCSHandler:
     def __init__(self):
-        if hasattr(st, 'secrets') and 'gcp_service_account' in st.secrets:
-            # Use service account info directly from Streamlit secrets
-            service_account_info = st.secrets['gcp_service_account']
-            self.storage_client = storage.Client.from_service_account_info(service_account_info)
-        else:
-            # Fallback to environment variable
-            if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-                raise ValueError("Google Cloud credentials not found in Streamlit secrets or environment variables")
-            self.storage_client = storage.Client()
+        if not GOOGLE_APPLICATION_CREDENTIALS:
+            raise ValueError("Google Cloud credentials not found in environment variables")
+        
+        # Initialize the storage client
+        self.storage_client = storage.Client()
 
     async def upload_file(self, file_data: bytes, filename: str, bucket_name: str, 
                          content_type: str = 'application/pdf') -> bool:
