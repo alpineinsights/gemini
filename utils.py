@@ -1,6 +1,4 @@
 import aiohttp
-import aioboto3
-import boto3
 import io
 import json
 import logging
@@ -23,12 +21,6 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
-
-# Get environment variables
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
-QUARTR_API_KEY = os.getenv("QUARTR_API_KEY")
 
 # Get environment variables for GCS
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
