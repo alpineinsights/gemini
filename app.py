@@ -36,6 +36,8 @@ if "current_company" not in st.session_state:
     st.session_state.current_company = None
 if "company_data" not in st.session_state:
     st.session_state.company_data = None
+if "documents_fetched" not in st.session_state:
+    st.session_state.documents_fetched = False
 
 # Load AWS credentials
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
@@ -57,8 +59,9 @@ def initialize_gemini():
         return None
     
     try:
+        # Configure the Gemini API with your API key
         genai.configure(api_key=GEMINI_API_KEY)
-        return genai.Client(api_key=GEMINI_API_KEY)
+        return True
     except Exception as e:
         st.error(f"Error initializing Gemini: {str(e)}")
         return None
@@ -81,86 +84,118 @@ async def process_company_documents(isin: str) -> List[Dict]:
             company_name = company_data.get('displayName', 'Unknown Company')
             events = company_data.get('events', [])
             
-            # Sort events by date (descending) and take the 6 most recent
+            # Sort events by date (descending) and take the most recent events first
             events.sort(key=lambda x: x.get('eventDate', ''), reverse=True)
-            recent_events = events[:6]
             
             processed_files = []
+            transcript_count = 0
+            report_count = 0
+            slides_count = 0
             
-            for event in recent_events:
+            # Only process up to 6 documents in total (2 of each type)
+            for event in events:
+                # Stop processing if we have enough documents (2 of each type)
+                if transcript_count >= 2 and report_count >= 2 and slides_count >= 2:
+                    break
+                    
                 event_date = event.get('eventDate', '').split('T')[0]
                 event_title = event.get('eventTitle', 'Unknown Event')
                 
-                # Check for different document types
-                doc_types = [
-                    ('transcript', event.get('transcriptUrl')),
-                    ('pdf', event.get('pdfUrl')),
-                    ('report', event.get('reportUrl'))
-                ]
-                
-                for doc_type, url in doc_types:
-                    if not url:
-                        continue
-                    
+                # Only process the document types we need
+                if transcript_count < 2 and event.get('transcriptUrl'):
+                    # Process transcript
                     try:
-                        if doc_type == 'transcript':
-                            # Process transcript differently
-                            transcripts = event.get('transcripts', {})
-                            if not transcripts:
-                                # If the transcripts object is empty, check for liveTranscripts
-                                transcripts = event.get('liveTranscripts', {})
-                            
-                            transcript_text = await transcript_processor.process_transcript(
-                                url, transcripts, session
+                        transcripts = event.get('transcripts', {})
+                        if not transcripts:
+                            # If the transcripts object is empty, check for liveTranscripts
+                            transcripts = event.get('liveTranscripts', {})
+                        
+                        transcript_text = await transcript_processor.process_transcript(
+                            event.get('transcriptUrl'), transcripts, session
+                        )
+                        
+                        if transcript_text:
+                            pdf_data = transcript_processor.create_pdf(
+                                company_name, event_title, event_date, transcript_text
                             )
                             
-                            if transcript_text:
-                                pdf_data = transcript_processor.create_pdf(
-                                    company_name, event_title, event_date, transcript_text
-                                )
+                            filename = s3_handler.create_filename(
+                                company_name, event_date, event_title, 'transcript', 'transcript.pdf'
+                            )
+                            
+                            success = await s3_handler.upload_file(
+                                pdf_data, filename, S3_BUCKET_NAME, 'application/pdf'
+                            )
+                            
+                            if success:
+                                processed_files.append({
+                                    'filename': filename,
+                                    'type': 'transcript',
+                                    'event_date': event_date,
+                                    'event_title': event_title,
+                                    's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                })
+                                transcript_count += 1
+                    except Exception as e:
+                        st.error(f"Error processing transcript for {event_title}: {str(e)}")
+                
+                # Process report (if we need more)
+                if report_count < 2 and event.get('reportUrl'):
+                    try:
+                        async with session.get(event.get('reportUrl')) as response:
+                            if response.status == 200:
+                                content = await response.read()
+                                original_filename = event.get('reportUrl').split('/')[-1]
                                 
                                 filename = s3_handler.create_filename(
-                                    company_name, event_date, event_title, 'transcript', 'transcript.pdf'
+                                    company_name, event_date, event_title, 'report', original_filename
                                 )
                                 
                                 success = await s3_handler.upload_file(
-                                    pdf_data, filename, S3_BUCKET_NAME, 'application/pdf'
+                                    content, filename, S3_BUCKET_NAME, 
+                                    response.headers.get('content-type', 'application/pdf')
                                 )
                                 
                                 if success:
                                     processed_files.append({
                                         'filename': filename,
-                                        'type': 'transcript',
+                                        'type': 'report',
                                         'event_date': event_date,
                                         'event_title': event_title,
                                         's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
                                     })
-                        else:
-                            # Process other document types
-                            async with session.get(url) as response:
-                                if response.status == 200:
-                                    content = await response.read()
-                                    original_filename = url.split('/')[-1]
-                                    
-                                    filename = s3_handler.create_filename(
-                                        company_name, event_date, event_title, doc_type, original_filename
-                                    )
-                                    
-                                    success = await s3_handler.upload_file(
-                                        content, filename, S3_BUCKET_NAME, 
-                                        response.headers.get('content-type', 'application/pdf')
-                                    )
-                                    
-                                    if success:
-                                        processed_files.append({
-                                            'filename': filename,
-                                            'type': doc_type,
-                                            'event_date': event_date,
-                                            'event_title': event_title,
-                                            's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
-                                        })
+                                    report_count += 1
                     except Exception as e:
-                        st.error(f"Error processing {doc_type} for {event_title}: {str(e)}")
+                        st.error(f"Error processing report for {event_title}: {str(e)}")
+                
+                # Process slides/PDF (if we need more)
+                if slides_count < 2 and event.get('pdfUrl'):
+                    try:
+                        async with session.get(event.get('pdfUrl')) as response:
+                            if response.status == 200:
+                                content = await response.read()
+                                original_filename = event.get('pdfUrl').split('/')[-1]
+                                
+                                filename = s3_handler.create_filename(
+                                    company_name, event_date, event_title, 'slides', original_filename
+                                )
+                                
+                                success = await s3_handler.upload_file(
+                                    content, filename, S3_BUCKET_NAME, 
+                                    response.headers.get('content-type', 'application/pdf')
+                                )
+                                
+                                if success:
+                                    processed_files.append({
+                                        'filename': filename,
+                                        'type': 'slides',
+                                        'event_date': event_date,
+                                        'event_title': event_title,
+                                        's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                    })
+                                    slides_count += 1
+                    except Exception as e:
+                        st.error(f"Error processing slides for {event_title}: {str(e)}")
             
             return processed_files
     except Exception as e:
@@ -197,43 +232,39 @@ def download_files_from_s3(file_infos: List[Dict]) -> List[str]:
 def query_gemini(query: str, file_paths: List[str]) -> str:
     """Query Gemini model with context from files"""
     try:
-        client = initialize_gemini()
-        if not client:
+        # Make sure Gemini is initialized
+        if not initialize_gemini():
             return "Error initializing Gemini client"
         
         # Upload files to Gemini
         files = []
         for file_path in file_paths:
             try:
-                files.append(client.files.upload(file=file_path))
+                file = genai.upload_file(file_path)
+                files.append(file)
             except Exception as e:
                 st.error(f"Error uploading file to Gemini: {str(e)}")
         
         if not files:
             return "No files were successfully uploaded to Gemini"
         
-        # Create content with files
-        from google.genai import types
-        contents = [types.Content(
-            role="user",
-            parts=[
-                *[types.Part.from_uri(file_uri=file.uri, mime_type=file.mime_type) for file in files],
-                types.Part.from_text(text=f"""You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: "{query}" """)
-            ]
-        )]
+        # Create a model instance
+        model = genai.GenerativeModel(
+            model_name="gemini-2.0-flash",
+            generation_config={
+                "temperature": 0.3,
+                "top_p": 0.95,
+                "top_k": 40,
+                "max_output_tokens": 8192,
+            }
+        )
         
-        # Generate response
-        model = "gemini-2.0-flash"
-        response = client.models.generate_content(
-            model=model,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                temperature=0.3,
-                top_p=0.95,
-                top_k=40,
-                max_output_tokens=8192,
-                response_mime_type="text/plain",
-            )
+        # Create the prompt with context
+        prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'"
+        
+        # Generate content with files as context
+        response = model.generate_content(
+            [prompt, *files]
         )
         
         return response.text
@@ -275,20 +306,7 @@ def main():
                 # Clear previous conversation when company changes
                 st.session_state.chat_history = []
                 st.session_state.processed_files = []
-                
-                # Process company documents asynchronously
-                with st.spinner(f"Fetching documents for {selected_company}..."):
-                    processed_files = asyncio.run(process_company_documents(isin))
-                    st.session_state.processed_files = processed_files
-                
-                if processed_files:
-                    st.success(f"Successfully processed {len(processed_files)} documents")
-                    # Show file list
-                    with st.expander("Processed Documents"):
-                        for file in processed_files:
-                            st.write(f"{file['event_date']} - {file['event_title']} ({file['type']})")
-                else:
-                    st.warning("No documents found or processed for this company")
+                st.session_state.documents_fetched = False
     
     # Main chat area
     for message in st.session_state.chat_history:
@@ -307,10 +325,38 @@ def main():
             response_placeholder = st.empty()
             response_placeholder.markdown("Thinking...")
             
+            # Check if we have a selected company
+            if not st.session_state.company_data:
+                response = "Please select a company from the sidebar first."
+                response_placeholder.markdown(response)
+                st.session_state.chat_history.append({"role": "assistant", "content": response})
+                return
+            
+            # Fetch documents if not already fetched
+            if not st.session_state.documents_fetched:
+                with st.spinner(f"Fetching documents for {st.session_state.company_data['name']}..."):
+                    isin = st.session_state.company_data['isin']
+                    processed_files = asyncio.run(process_company_documents(isin))
+                    st.session_state.processed_files = processed_files
+                    st.session_state.documents_fetched = True
+                    
+                    if not processed_files:
+                        response = "No documents found for this company. Please try another company or check your Quartr API key."
+                        response_placeholder.markdown(response)
+                        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                        return
+            
+            # Process the user query with the fetched documents
             if st.session_state.processed_files:
                 with st.spinner("Processing your query with Gemini..."):
                     # Download files from S3
                     local_files = download_files_from_s3(st.session_state.processed_files)
+                    
+                    if not local_files:
+                        response = "Error downloading files from S3. Please check your AWS credentials."
+                        response_placeholder.markdown(response)
+                        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                        return
                     
                     # Query Gemini with file context
                     response = query_gemini(query, local_files)
@@ -327,7 +373,7 @@ def main():
                     # Add assistant response to chat history
                     st.session_state.chat_history.append({"role": "assistant", "content": full_response})
             else:
-                response = "No documents are available for this company. Please select another company or try again later."
+                response = "No documents are available for this company. Please try another company."
                 response_placeholder.markdown(response)
                 st.session_state.chat_history.append({"role": "assistant", "content": response})
 
