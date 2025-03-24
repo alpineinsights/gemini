@@ -236,11 +236,23 @@ class TranscriptProcessor:
 
 class GCSHandler:
     def __init__(self):
-        if not GOOGLE_APPLICATION_CREDENTIALS:
-            raise ValueError("Google Cloud credentials not found in environment variables")
-        
-        # Initialize the storage client
-        self.storage_client = storage.Client()
+        try:
+            if hasattr(st, 'secrets') and 'gcp_service_account' in st.secrets:
+                # Use service account info directly from Streamlit secrets
+                service_account_info = st.secrets['gcp_service_account']
+                
+                # Create client with explicit credentials from secrets
+                self.storage_client = storage.Client.from_service_account_info(service_account_info)
+                logger.info("GCS client initialized from Streamlit secrets")
+            elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+                # If running locally with application credentials
+                self.storage_client = storage.Client()
+                logger.info("GCS client initialized from environment variable")
+            else:
+                raise ValueError("Google Cloud credentials not found in Streamlit secrets or environment variables")
+        except Exception as e:
+            logger.error(f"Error initializing GCS client: {str(e)}")
+            raise
 
     async def upload_file(self, file_data: bytes, filename: str, bucket_name: str, 
                          content_type: str = 'application/pdf') -> bool:
