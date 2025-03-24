@@ -1,10 +1,4 @@
 import os
-# Disable GCE metadata server requests
-os.environ["NO_GCE_CHECK"] = "true"
-
-# Set a bogus path to prevent trying to use Application Default Credentials
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "non_existent_path"
-
 import streamlit as st
 import pandas as pd
 import os
