@@ -54,20 +54,13 @@ if hasattr(st, 'secrets') and 'other_secrets' in st.secrets and 'GEMINI_API_KEY'
 else:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Create GCS connection using secrets
+# Replace the existing create_gcs_connection function with this one:
 def create_gcs_connection():
     """Create GCS connection using Streamlit secrets or environment variables"""
-    if hasattr(st, 'secrets') and 'gcp_service_account' in st.secrets:
-        # This will automatically use the gcp_service_account from secrets
-        conn = st.connection('gcs', type=FilesConnection)
-        return conn
-    else:
-        # Fallback to environment variables (for local development)
-        conn = st.connection('gcs', type=FilesConnection)
-        return conn
+    return GCSHandler()  # Return handler directly instead of using FilesConnection
 
-# Initialize GCS connection
-conn = create_gcs_connection()
+# Initialize GCS handler
+gcs_handler = create_gcs_connection()
 
 # Function to extract text from PDFs
 def extract_pdf_text(pdf_path: str) -> str:
@@ -245,7 +238,7 @@ async def process_company_documents(isin: str) -> List[Dict]:
         st.error(f"Error processing company documents: {str(e)}")
         return []
 
-# Function to download files from GCS to temporary location
+# Update the download_files_from_gcs function to use gcs_handler directly:
 def download_files_from_gcs(file_infos: List[Dict]) -> List[str]:
     """Download files from GCS to temporary location and return local paths"""
     
@@ -259,10 +252,10 @@ def download_files_from_gcs(file_infos: List[Dict]) -> List[str]:
             
             local_path = os.path.join(temp_dir, file_info['filename'])
             
-            # Download the file using st-files-connection
-            with open(local_path, 'wb') as f:
-                content = conn.read(gcs_path, input_format="binary")
-                f.write(content)
+            # Download the file using GCSHandler directly
+            bucket = gcs_handler.storage_client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            blob.download_to_filename(local_path)
                 
             local_files.append(local_path)
         except Exception as e:
